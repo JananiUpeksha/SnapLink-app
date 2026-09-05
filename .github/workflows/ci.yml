@@ -57,23 +57,25 @@ jobs:
     needs: build-and-scan
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout app repo (to read commit SHA)
+        uses: actions/checkout@v4
+
       - name: Set short SHA
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Clone GitOps repo
-        run: |
-          git clone https://${{ secrets.GITOPS_PAT }}@github.com/JananiUpeksha/SnapLink-GitOps.git
+        run: git clone https://${{ secrets.GITOPS_PAT }}@github.com/JananiUpeksha/SnapLink-GitOps.git gitops-repo
 
       - name: Update image tags in values.yaml
+        working-directory: gitops-repo/snaplink-chart
         run: |
-          cd SnapLink-GitOps/snaplink-chart
           sed -i "s/tag: .*/tag: ${{ steps.vars.outputs.sha_short }}/" values.yaml
           cat values.yaml
 
       - name: Commit and push changes
+        working-directory: gitops-repo
         run: |
-          cd SnapLink-GitOps
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add snaplink-chart/values.yaml
