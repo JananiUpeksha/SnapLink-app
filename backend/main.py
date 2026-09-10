@@ -7,12 +7,19 @@ from models import URL, Click
 from schemas import ShortenRequest, ShortenResponse, StatsResponse
 from redis_client import redis_client
 from utils import generate_short_code
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Counter
 from rate_limit import check_rate_limit
 from fastapi import Request
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="SnapLink API")
+
+Instrumentator().instrument(app).expose(app)
+
+redirect_cache_hits = Counter("snaplink_redirect_cache_hits_total", "Redirects served from Redis cache")
+redirect_cache_misses = Counter("snaplink_redirect_cache_misses_total", "Redirects requiring DB lookup")
 
 @app.get("/health")
 def health():
@@ -30,14 +37,25 @@ def shorten_url(payload: ShortenRequest, request: Request, db: Session = Depends
     db.commit()
     db.refresh(entry)
 
+    redis_client.setex(f"url:{code}", 3600, entry.long_url)
+
     return ShortenResponse(short_code=code, short_url=f"/{code}")
 
 @app.get("/{code}")
 def redirect_url(code: str, db: Session = Depends(get_db)):
+    cached_url = redis_client.get(f"url:{code}")
+
+    if cached_url:
+        redirect_cache_hits.inc()
+        redis_client.incr(f"clicks:{code}")
+        return RedirectResponse(url=cached_url)
+
+    redirect_cache_misses.inc()
     entry = db.query(URL).filter(URL.short_code == code).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Short code not found")
 
+    redis_client.setex(f"url:{code}", 3600, entry.long_url)
     redis_client.incr(f"clicks:{code}")
 
     return RedirectResponse(url=entry.long_url)
